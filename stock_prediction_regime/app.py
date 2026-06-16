@@ -4,6 +4,12 @@ import pandas as pd
 import numpy as np
 import joblib
 
+import feedparser
+
+from transformers import pipeline
+
+from urllib.parse import quote_plus
+
 st.set_page_config(
     page_title="AI Market Regime Dashboard",
     layout="wide"
@@ -13,37 +19,43 @@ stock_options = {
     "NIFTY 50": {
         "ticker": "^NSEI",
         "model": "models/nifty_hmm.pkl",
-        "scaler": "models/nifty_scaler.pkl"
+        "scaler": "models/nifty_scaler.pkl",
+        "news": "Nifty 50"
     },
 
     "Reliance": {
         "ticker": "RELIANCE.NS",
         "model": "models/reliance_hmm.pkl",
-        "scaler": "models/reliance_scaler.pkl"
+        "scaler": "models/reliance_scaler.pkl",
+        "news": "Reliance Industries"
     },
 
     "TCS": {
         "ticker": "TCS.NS",
         "model": "models/tcs_hmm.pkl",
-        "scaler": "models/tcs_scaler.pkl"
+        "scaler": "models/tcs_scaler.pkl",
+        "news": "TCS"
     },
 
     "Infosys": {
         "ticker": "INFY.NS",
         "model": "models/infy_hmm.pkl",
-        "scaler": "models/infy_scaler.pkl"
+        "scaler": "models/infy_scaler.pkl",
+        "news": "Infosys"
     },
 
     "HDFC Bank": {
         "ticker": "HDFCBANK.NS",
         "model": "models/hdfc_hmm.pkl",
-        "scaler": "models/hdfc_scaler.pkl"
+        "scaler": "models/hdfc_scaler.pkl",
+        "news": "HDFC Bank"
     },
 
     "ICICI Bank": {
         "ticker": "ICICIBANK.NS",
         "model": "models/icici_hmm.pkl",
-        "scaler": "models/icici_scaler.pkl"
+        "scaler": "models/icici_scaler.pkl",
+        "news": "ICICI Bank"
     }
 }
 
@@ -63,6 +75,11 @@ scaler_path = stock_options[selected_stock]["scaler"]
 model = joblib.load(model_path)
 
 scaler = joblib.load(scaler_path)
+
+classifier = pipeline(
+    "text-classification",
+    model="ProsusAI/finbert"
+)
 
 st.sidebar.markdown("---")
 
@@ -124,27 +141,120 @@ data["Regime"] = states
 
 current_regime = states[-1]
 
+news_query = stock_options[selected_stock]["news"]
+
+encoded_query = quote_plus(news_query)
+
+rss_url = (
+    f"https://news.google.com/rss/search?"
+    f"q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
+)
+
+feed = feedparser.parse(rss_url)
+
+headlines = [
+    article.title
+    for article in feed.entries[:25]
+]
+
+overall_sentiment = 0
+
+if len(headlines) > 0:
+
+    results = classifier(headlines)
+
+    scores = []
+
+    for result in results:
+
+        label = result["label"]
+        confidence = result["score"]
+
+        if label == "positive":
+            score = confidence
+
+        elif label == "negative":
+            score = -confidence
+
+        else:
+            score = 0
+
+        scores.append(score)
+
+    overall_sentiment = (
+        sum(scores)
+        / len(scores)
+    )
+
+if overall_sentiment > 0.25:
+    sentiment = "Positive"
+
+elif overall_sentiment < -0.25:
+    sentiment = "Negative"
+
+else:
+    sentiment = "Neutral"
+
 latest_close = float(
     data["Close"].iloc[-1]
 )
 
 if current_regime == 0:
+    regime_text = "Bullish"
+
+elif current_regime == 1:
+    regime_text = "Neutral"
+
+else:
+    regime_text = "Bearish"
+
+signal_table = {
+
+    ("Bullish", "Positive"):
+        "🚀 STRONG BUY",
+
+    ("Bullish", "Neutral"):
+        "🟢 BUY",
+
+    ("Bullish", "Negative"):
+        "🟡 HOLD",
+
+    ("Neutral", "Positive"):
+        "👀 WATCH",
+
+    ("Neutral", "Neutral"):
+        "🟡 HOLD",
+
+    ("Neutral", "Negative"):
+        "⚠️ AVOID",
+
+    ("Bearish", "Positive"):
+        "🟡 HOLD",
+
+    ("Bearish", "Neutral"):
+        "🔴 SELL",
+
+    ("Bearish", "Negative"):
+        "⛔ STRONG SELL"
+}
+
+final_signal = signal_table[
+    (regime_text, sentiment)
+]
+
+if regime_text == "Bullish":
 
     regime_name = "🟢 Bullish"
 
-    recommendation = "BUY"
-
-elif current_regime == 1:
+elif regime_text == "Neutral":
 
     regime_name = "🟡 Neutral"
-
-    recommendation = "HOLD"
 
 else:
 
     regime_name = "🔴 Bearish"
 
-    recommendation = "STAY OUT"
+recommendation = final_signal
 
 data["Signal"] = 0
 
@@ -208,28 +318,32 @@ regime_labels = {
     2: "Bearish"
 }
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-
-    st.metric(
-        "Latest Close",
-        round(latest_close, 2)
-    )
-
-with col2:
-
     st.metric(
         "Current Regime",
         regime_name
     )
 
-with col3:
-
+with col2:
     st.metric(
-        "Recommendation",
-        recommendation
+        "News Sentiment",
+        sentiment
     )
+
+with col3:
+    st.metric(
+        "Sentiment Score",
+        round(overall_sentiment, 2)
+    )
+
+with col4:
+    st.metric(
+        "Final Signal",
+        final_signal
+    )
+
 
 st.divider()
 
@@ -417,6 +531,11 @@ st.dataframe(
     opportunities,
     use_container_width=True
 )
+
+st.subheader("📰 Latest News Headlines")
+
+for headline in headlines[:5]:
+    st.write("•", headline)
 
 st.download_button(
     "📥 Download Analysis",
